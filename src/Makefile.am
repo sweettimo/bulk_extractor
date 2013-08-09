@@ -50,7 +50,7 @@ RAR_SUPPORT = \
 bulk_scanners = \
 	scan_aes.cpp \
 	scan_base64.cpp \
-	scan_bulk.cpp\
+	scan_bulktype.cpp\
 	scan_ccns2.cpp scan_ccns2.h \
 	scan_elf.cpp \
 	scan_exif.cpp exif_reader.h exif_reader.cpp exif_entry.cpp\
@@ -105,7 +105,7 @@ stand_SOURCES = \
 	dig.cpp \
 	histogram.cpp \
 	histogram.h \
-	scan_bulk.cpp \
+	scan_bulktype.cpp \
 	stand.cpp \
 	word_and_context_list.cpp \
 	word_and_context_list.h \

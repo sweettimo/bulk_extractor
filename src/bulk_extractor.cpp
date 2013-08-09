@@ -138,8 +138,8 @@ scanner_t *scanners_builtin[] = {
 #ifdef HAVE_LIBLIGHTGREP
     scan_lightgrep,
 #endif
-#ifdef USE_LIFT
-    scan_lift,  // not ready for prime time
+#ifdef USE_SCEADAN
+    scan_sceadan,  // not ready for prime time
 #endif
     //scan_extx,  // not ready for prime time
 #ifdef HAVE_EXIV2

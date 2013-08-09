@@ -6,10 +6,14 @@
 
 #include <algorithm>
 
+static uint32_t bulktype_mode = 1;
+static size_t   bulk_block_size = 4096;	// default block size
+
 /**
  * scan_bulk implements the bulk data analysis system.
- * The data analysis system was largely written to solve the DFRWS 2012 challenge.
- * http://www.dfrws.org/2012/challenge/
+ * The data analysis system was originally written to solve the DFRWS 2012 challenge.
+ * http://www.dfrws.org/2012/challenge/.  It was rewritten to use the modified tag system
+ * to perform disk storage inventory.
  * 
  * Method of operation:
  *
@@ -103,7 +107,6 @@ std::ostream & operator<< (std::ostream &os, const sector_typetag &ss) {
 typedef vector<sector_typetag> sector_typetags_vector_t; //
 sector_typetags_vector_t sector_typetags;		      // what gets put where
 
-static size_t opt_bulk_block_size = 512;	// 
 
 static void bulk_process_feature_file(const std::string &fn)
 {
@@ -129,7 +132,7 @@ static void bulk_process_feature_file(const std::string &fn)
 	    std::string &taglocation  = fields[0];
 	    std::string &tagtype = fields[1];
 	    uint64_t offset = stoi64(taglocation);
-	    uint64_t sector =  offset / opt_bulk_block_size;
+	    uint64_t sector =  offset / bulk_block_size;
 
 	    /* If the array hasn't been expanded to the point of this element, expand it with blanks */
 	    while(sector > sector_typetags.size()){
@@ -169,7 +172,7 @@ static void bulk_process_feature_file(const std::string &fn)
 	    /* Process a feature, which will add specificity to the tag */
 	    if(sector_typetags.size()==sector){ 
 		/* Hm... No tag (and all tags got processed first), so this is unknown */
-		sector_typetags.push_back(sector_typetag(opt_bulk_block_size,UNKNOWN,SPACE));
+		sector_typetags.push_back(sector_typetag(bulk_block_size,UNKNOWN,SPACE));
 	    } 
 	    /* append what we've learned regarding this feature */
 	    
@@ -221,7 +224,7 @@ static void dfrws2012_bulk_process_dump()
 {
     for(size_t i=0;i<sector_typetags.size();i++){
 	sector_typetag &s = sector_typetags[i];
-	uint64_t    offset = i * opt_bulk_block_size;
+	uint64_t    offset = i * bulk_block_size;
 	std::string ctype = (s.stype.size()>0 ? s.stype : "UNRECOGNIZED CONTENT");
 	bool print_comment = s.scomment.size() > 0;
 
@@ -328,7 +331,7 @@ public:;
     float entropy() {
 	float eval = 0;
 	for(vector<hist_element *>::const_iterator it = counts.begin();it!=counts.end();it++){
-	    float p = (float)(*it)->count / (float)opt_bulk_block_size;
+	    float p = (float)(*it)->count / (float)bulk_block_size;
 	    eval += -p * log2(p);
 	}
 	return eval;
@@ -346,7 +349,17 @@ vector<float> histogram::entropy_array;	// where things get store
  * Returns true if 
  */
 
-double sd_autocorrelation_cosine_variance(const sbuf_t &sbuf,const histogram &sbufhist)
+class scan_bulktype {
+public:;
+    scan_bulktype(const class scanner_params &sp):sbuf(sp.sbuf){};
+    const sbuf_t &sbuf;
+    double sd_autocorrelation_cosine_variance(const histogram &sbufhist);
+    void bulk_ngram_entropy();
+    bool bulk_bitlocker();
+};
+
+
+double scan_bulktype::sd_autocorrelation_cosine_variance(const histogram &sbufhist)
 {
     if(sbuf.bufsize<sd_acv_min_buf) return 0;
     if(sbuf.bufsize==0) return 0;
@@ -396,7 +409,7 @@ double sd_autocorrelation_cosine_variance(const sbuf_t &sbuf,const histogram &sb
  * http://simson.net/clips/academic/2010.DFRWS.SmallBlockForensics.pdf
  */
 
-static inline void bulk_ngram_entropy(const sbuf_t &sbuf,feature_recorder *bulk,feature_recorder *bulk_tags)
+void scan_bulktype::bulk_ngram_entropy()
 {
     /* Quickly compute the histogram */ 
 
@@ -421,7 +434,6 @@ static inline void bulk_ngram_entropy(const sbuf_t &sbuf,feature_recorder *bulk,
 	}
     }
 
-
     /* Couldn't find ngram; check entropy and FF00 counts...*/
     size_t ff00_count=0;
     histogram h;
@@ -443,7 +455,7 @@ static inline void bulk_ngram_entropy(const sbuf_t &sbuf,feature_recorder *bulk,
 
     stringstream ss;
     if(entropy>opt_high_entropy){
-	float cosineVariance = sd_autocorrelation_cosine_variance(sbuf,h);
+	float cosineVariance = sd_autocorrelation_cosine_variance(h);
 	if(debug & DEBUG_INFO) ss << "high entropy ( S=" << entropy << ")" << " ACV= " << cosineVariance << " ";
 	if(cosineVariance > opt_MinimumCosineVariance){
 	    ss << RANDOM;
@@ -465,13 +477,17 @@ static inline void bulk_ngram_entropy(const sbuf_t &sbuf,feature_recorder *bulk,
 }
     
 
-static inline void bulk_bitlocker(const sbuf_t &sbuf,feature_recorder *bulk,feature_recorder *bulk_tags)
+bool scan_bulktype::bulk_bitlocker()
 {
     /* Look for a bitlocker start */
-    if(sbuf.bufsize >= sizeof(BitLockerStart)
-       && memcmp(sbuf.buf,BitLockerStart,sizeof(BitLockerStart))==0){
-	bulk->write_tag(sbuf,"BITLOCKER HEADER");
-    }
+    return sbuf.bufsize >= sizeof(BitLockerStart)
+        && memcmp(sbuf.buf,BitLockerStart,sizeof(BitLockerStart))==0;
+}
+
+void scanner_bulktype::process()
+{
+    bulk_ngram_entropy(sbuf,bulk,bulk_tags);
+    bulk_bitlocker(sbuf,bulk,bulk_tags);
 }
 
 
@@ -479,52 +495,52 @@ static inline void bulk_bitlocker(const sbuf_t &sbuf,feature_recorder *bulk,feat
 #define _TEXT(x) x
 #endif
 
-static bool dfrws_challenge = false;
-
 extern "C"
 void scan_bulk(const class scanner_params &sp,const recursion_control_block &rcb)
 {
     assert(sp.sp_version==scanner_params::CURRENT_SP_VERSION);      
-    // startup
+
     if(sp.phase==scanner_params::PHASE_STARTUP){
         assert(sp.info->si_version==scanner_info::CURRENT_SI_VERSION);
 	sp.info->name		= "bulk";
 	sp.info->author		= "Simson Garfinkel";
-	sp.info->description	= "perform bulk data scan";
-	sp.info->flags		= scanner_info::SCANNER_DISABLED | scanner_info::SCANNER_WANTS_NGRAMS | scanner_info::SCANNER_NO_ALL;
-	sp.info->feature_names.insert("bulk");
-	sp.info->feature_names.insert("bulk_tags");
-        sp.info->get_config("bulk_block_size",&opt_bulk_block_size,"Block size (in bytes) for bulk data analysis");
+	sp.info->description	= "perform bulk data type scan";
+	sp.info->flags		= (scanner_info::SCANNER_DISABLED
+                                   | scanner_info::SCANNER_WANTS_NGRAMS
+                                   | scanner_info::SCANNER_NO_ALL);
+        sp.info->get_config("bulktype_mode",&bulktype_mode,"1=histogram only; 2=all tags");
+        sp.info->get_config("bulk_block_size",&bulk_block_size,"Block size (in bytes) for bulk data analysis");
+        sp.info->get_config("bulktype_debug",&debug,"bulk debug mode");
 
-        debug = sp.info->config->debug;
+	histogram::precalc_entropy_array(bulk_block_size);
 
-	histogram::precalc_entropy_array(opt_bulk_block_size);
+        if(bulktype_mode==2){
+            sp.info->feature_names.insert("bulk_tags");
+        }
 
-        sp.info->get_config("DFRWS2012",&dfrws_challenge,"True if running DFRWS2012 challenge code");
         return; 
     }
+
     // classify a buffer
     if(sp.phase==scanner_params::PHASE_SCAN){
 
-	feature_recorder *bulk = sp.fs.get_name("bulk");
 	feature_recorder *bulk_tags = sp.fs.get_name("bulk_tags");
     
-
 	if(sp.sbuf.pos0.isRecursive()){
 	    /* Record the fact that a recursive call was made, which tells us about the data */
 	    bulk_tags->write_tag(sp.sbuf,""); // tag that we found recursive data, not sure what kind
 	}
 
-	if(sp.sbuf.pagesize < opt_bulk_block_size) return; // can't analyze something that small
+	if(sp.sbuf.pagesize < bulk_block_size) return; // can't analyze something this small
 
-	// Loop through the sbuf in opt_bulk_block_size sized chunks
+	// Loop through the sbuf in bulk_block_size sized chunks
 	// for each one, examine the entropy and scan for bitlocker (unfortunately hardcoded)
 	// This needs to have a general plug-in architecture
-	for(size_t base=0;base+opt_bulk_block_size<=sp.sbuf.pagesize;base+=opt_bulk_block_size){
-	    sbuf_t sbuf(sp.sbuf,base,opt_bulk_block_size);
-	    bulk_ngram_entropy(sbuf,bulk,bulk_tags);
-	    bulk_bitlocker(sbuf,bulk,bulk_tags);
-	}
+	for(size_t base=0;base+bulk_block_size<=sp.sbuf.pagesize;base+=bulk_block_size){
+	    sbuf_t sbuf(sp.sbuf,base,bulk_block_size);
+            scan_bulktype scanner(sbuf);
+            scanner.process();
+        }
     }
     // shutdown --- combine the results if we are in DFRWS mode
     if(sp.phase==scanner_params::PHASE_SHUTDOWN){
@@ -541,7 +557,6 @@ void scan_bulk(const class scanner_params &sp,const recursion_control_block &rcb
 		    bulk_process_feature_file(*it);
 		}
 	    }
-	    dfrws2012_bulk_process_dump();
 	}
 	return;		// no cleanup
     }

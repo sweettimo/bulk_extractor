@@ -217,10 +217,10 @@ done
 unset option
 
 ################################################################
-## lift support
-## Disabled for 1.3 release
-AC_ARG_ENABLE([lift], AS_HELP_STRING([--enable-lift], [enable CMU LIFT SVM for type identification]),
-		      AC_DEFINE(USE_LIFT, 1, [Use LIFT SVM]))
+## sceadan support
+## Disabled by default
+AC_ARG_ENABLE([sceadan], AS_HELP_STRING([--enable-sceadan], [enable UTSA SCEADAN SVM for type identification]),
+		      AC_DEFINE(USE_SCEADAN, 1, [Use SCEADAN block classifier]))
 
 ## rar support
 ## Enabled for 1.4 release!

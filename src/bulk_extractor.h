@@ -198,7 +198,7 @@ extern "C" scanner_t scan_net;
 extern "C" scanner_t scan_base16;
 extern "C" scanner_t scan_base64;
 extern "C" scanner_t scan_vcard;
-extern "C" scanner_t scan_lift;
+extern "C" scanner_t scan_sceadan;
 extern "C" scanner_t scan_extx;
 /* Special support for find */
 extern "C" scanner_t scan_find;
