@@ -42,36 +42,12 @@ static const std::string HUFFMAN("huffman_compressed");
 
 static int debug=0;
 
-/* Substitution table */
-static struct replace_t {
-    const char *from;
-    const char *to;
-} dfrws2012_replacements[] =  {
-    {"constant(0x00)","null"},
-    {"huffman_compressed","zlib"},
-    {"gzip","zlib"},
-    {0,0}
-};
 
-/* Feature indicator table */
-static struct feature_indicators_t {
-    const char *feature_file_name;
-    const char *feature_content;
-    const char *dfrws_type;
-}  feature_indicators[] = {
-    {"aes_keys",0,"aeskey"},
-    {"elf","","elf_executable"},
-    {"exif","<exif>","jpg"},
-    {"json",0,"json"},
-    {"kml",0,"xml-kml"},
-    {"url",0,"html"},
-    {"vcard",0,"txt-vcard"},
-    {"windirs","fileobject src='mft'","fs-ntfs"},
-    {"windirs","fileobject src='fat'","fs-fat"},
-    {"winpe",0,"ms-win-prefetch"},
-    {0,0,0},
-};
-
+float  opt_high_entropy         = 7.0;	// the level at which we alert
+bool   opt_low_entropy		= false;  // true if we report low entropy
+float  opt_MinimumCosineVariance = 0.999; // above this is random; below is huffman
+int    opt_VectorLen = 250;
+size_t sd_acv_min_buf = 4096;
 
 /* Voting on the contents of each sector */
 class sector_typetag {
@@ -220,65 +196,11 @@ static void bulk_process_feature_file(const dig::filename_t &fn16)
 }
 #endif
 
-static void dfrws2012_bulk_process_dump()
-{
-    for(size_t i=0;i<sector_typetags.size();i++){
-	sector_typetag &s = sector_typetags[i];
-	uint64_t    offset = i * bulk_block_size;
-	std::string ctype = (s.stype.size()>0 ? s.stype : "UNRECOGNIZED CONTENT");
-	bool print_comment = s.scomment.size() > 0;
-
-	if(ctype.substr(0,CONSTANT.size())==CONSTANT) { // rule 1 - Constant has no comment
-	    print_comment = false;
-	}
-
-	/* Leading slash gets removed */
-	if(ctype.at(0)=='/') ctype.erase(0,1);
-
-	/* Identifiers get moved to lower case and slashes get changed to dashes */
-	for(size_t j=0;j<ctype.size();j++){
-	    if(isupper(ctype[j])) ctype[j] = tolower(ctype[j]);
-	    if(ctype[j]=='/') ctype[j]='-';
-	}
-	
-	/* Remove anything inside braces */
-	while(true){
-	    size_t open_br = ctype.find('{');
-	    if(open_br==std::string::npos) break;
-	    if(open_br>0 && ctype[open_br-1]==' ') open_br--; // gobble the space too
-	    size_t close_br = ctype.find('}',open_br);
-	    if(close_br != std::string::npos){
-		ctype.replace(open_br,close_br,"");
-	    }
-	}
-
-	/* Process the replacement array */
-	for(const replace_t *rep = dfrws2012_replacements;rep->from;rep++){
-	    size_t loc = ctype.find(rep->from);
-	    if(loc!=std::string::npos){
-		ctype.replace(loc,strlen(rep->from),rep->to);
-	    }
-	}
-
-	std::cout << offset << " " << ctype ;
-	if(print_comment) std::cout << " # " << s.scomment;
-	std::cout << "\n";
-    }
-}
-
-/* Start of bitlocker protected volume */
-static uint8_t BitLockerStart[] = {0xEB,0x52,0x90,0x2D,0x46,0x56,0x45,0x2D,0x46,0x53,0x2D};
-float  opt_high_entropy         = 7.0;	// the level at which we alert
-bool   opt_low_entropy		= false;  // true if we report low entropy
-float  opt_MinimumCosineVariance = 0.999; // above this is random; below is huffman
-int    opt_VectorLen = 250;
-size_t sd_acv_min_buf = 4096;
-
 
 /**
  * Internal histogram class, can also handle entropy calculations
  */
-class histogram {
+class bulk_histogram {
 public:;
     class hist_element {
     public:;
@@ -340,7 +262,7 @@ public:;
 	return counts.size();
     };
 };
-vector<float> histogram::entropy_array;	// where things get store
+vector<float> bulk_histogram::entropy_array;	// where things get store
 
 
 /* 
@@ -351,15 +273,17 @@ vector<float> histogram::entropy_array;	// where things get store
 
 class scan_bulktype {
 public:;
-    scan_bulktype(const class scanner_params &sp):sbuf(sp.sbuf){};
+    scan_bulktype(const sbuf_t &sbuf_,feature_recorder_set &fs_):sbuf(sbuf_),fs(fs_){
+    };
     const sbuf_t &sbuf;
-    double sd_autocorrelation_cosine_variance(const histogram &sbufhist);
+    feature_recroder_set &fs;
+    double sd_autocorrelation_cosine_variance(const bulk_histogram &sbufhist);
     void bulk_ngram_entropy();
     bool bulk_bitlocker();
 };
 
 
-double scan_bulktype::sd_autocorrelation_cosine_variance(const histogram &sbufhist)
+double scan_bulktype::sd_autocorrelation_cosine_variance(const bulk_histogram &sbufhist)
 {
     if(sbuf.bufsize<sd_acv_min_buf) return 0;
     if(sbuf.bufsize==0) return 0;
@@ -373,7 +297,7 @@ double scan_bulktype::sd_autocorrelation_cosine_variance(const histogram &sbufhi
 	autobuf.buf[sbuf.bufsize-1] = sbuf[sbuf.bufsize-1] + sbuf[0];
 
 	/* Get a histogram for autobuf */
-	histogram autohist;
+	bulk_histogram autohist;
 	autohist.add(autobuf.buf,sbuf.bufsize);
 	autohist.calc_distribution();
 
@@ -436,7 +360,7 @@ void scan_bulktype::bulk_ngram_entropy()
 
     /* Couldn't find ngram; check entropy and FF00 counts...*/
     size_t ff00_count=0;
-    histogram h;
+    bulk_histogram h;
     h.add(sbuf.buf,sbuf.pagesize);
     h.calc_distribution();		
 
@@ -469,7 +393,7 @@ void scan_bulktype::bulk_ngram_entropy()
 	ss << "low entropy ( S=" << entropy << ")";
 	if(h.unique_counts() < 5){
 	    ss << " Unique Counts: " << h.unique_counts() << " ";
-	    for(vector<histogram::hist_element *>::const_iterator it = h.counts.begin();it!=h.counts.end();it++){
+	    for(vector<bulk_histogram::hist_element *>::const_iterator it = h.counts.begin();it!=h.counts.end();it++){
 		ss << (int)((*it)->val) << ":" << (*it)->count << " ";
 	    }
 	}
@@ -480,6 +404,8 @@ void scan_bulktype::bulk_ngram_entropy()
 bool scan_bulktype::bulk_bitlocker()
 {
     /* Look for a bitlocker start */
+    /* Start of bitlocker protected volume */
+    static uint8_t BitLockerStart[] = {0xEB,0x52,0x90,0x2D,0x46,0x56,0x45,0x2D,0x46,0x53,0x2D};
     return sbuf.bufsize >= sizeof(BitLockerStart)
         && memcmp(sbuf.buf,BitLockerStart,sizeof(BitLockerStart))==0;
 }
@@ -489,7 +415,6 @@ void scanner_bulktype::process()
     bulk_ngram_entropy(sbuf,bulk,bulk_tags);
     bulk_bitlocker(sbuf,bulk,bulk_tags);
 }
-
 
 #ifndef _TEXT 
 #define _TEXT(x) x
@@ -512,7 +437,7 @@ void scan_bulk(const class scanner_params &sp,const recursion_control_block &rcb
         sp.info->get_config("bulk_block_size",&bulk_block_size,"Block size (in bytes) for bulk data analysis");
         sp.info->get_config("bulktype_debug",&debug,"bulk debug mode");
 
-	histogram::precalc_entropy_array(bulk_block_size);
+	bulk_histogram::precalc_entropy_array(bulk_block_size);
 
         if(bulktype_mode==2){
             sp.info->feature_names.insert("bulk_tags");
@@ -538,27 +463,9 @@ void scan_bulk(const class scanner_params &sp,const recursion_control_block &rcb
 	// This needs to have a general plug-in architecture
 	for(size_t base=0;base+bulk_block_size<=sp.sbuf.pagesize;base+=bulk_block_size){
 	    sbuf_t sbuf(sp.sbuf,base,bulk_block_size);
-            scan_bulktype scanner(sbuf);
+            scan_bulktype scanner(sbuf,sp.fs);
             scanner.process();
         }
-    }
-    // shutdown --- combine the results if we are in DFRWS mode
-    if(sp.phase==scanner_params::PHASE_SHUTDOWN){
-	if(dfrws_challenge){
-	    feature_recorder *bulk = sp.fs.get_name("bulk");
-	    // First process the bulk_tags and lift_tags
-	    bulk_process_feature_file(bulk->outdir + "/bulk_tags.txt"); 
-	    bulk_process_feature_file(bulk->outdir + "/lift_tags.txt"); 
-
-	    // Process the remaining feature files
-	    dig d(bulk->outdir);
-	    for(dig::const_iterator it = d.begin(); it!=d.end(); ++it){
-		if(ends_with(*it,_TEXT("_tags.txt"))==false){
-		    bulk_process_feature_file(*it);
-		}
-	    }
-	}
-	return;		// no cleanup
     }
 }
 
